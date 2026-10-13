@@ -1,0 +1,152 @@
+---
+# Build the "native" variant of one QEMU version on native amd64 and arm64
+# runners (no emulation), verify each image actually contains QEMU, and
+# publish them to GHCR as a single multi-platform tag.
+name: publish-native
+on:
+  push:
+    branches:
+      - 'master'
+      - 'main'
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 1 * *'
+env:
+  REGISTRY: ghcr.io
+  # which version directory to build ("11.1" is the "latest" alias upstream)
+  QEMU_DIR: '11.1'
+concurrency:
+  group: publish-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      dir: ${{ steps.version.outputs.dir }}
+      version: ${{ steps.version.outputs.version }}
+      image: ${{ steps.version.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Read version
+        id: version
+        run: |
+          version="$(jq -r --arg v "$QEMU_DIR" '.[$v].version' versions.json)"
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "::error::no version for '$QEMU_DIR' in versions.json"
+            exit 1
+          fi
+          echo "dir=$QEMU_DIR" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/qemu" >> "$GITHUB_OUTPUT"
+
+  docker:
+    needs: prep
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    permissions:
+      packages: write
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+            platform: linux/amd64
+            qemu_system: qemu-system-x86_64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            platform: linux/arm64
+            qemu_system: qemu-system-aarch64
+    env:
+      ARCH_TAG: ${{ needs.prep.outputs.image }}:${{ needs.prep.outputs.version }}-native-${{ matrix.arch }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+      - name: Log in to registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: ${{ needs.prep.outputs.dir }}
+          file: ${{ needs.prep.outputs.dir }}/Dockerfile.native
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          load: true
+          push: false
+          tags: ${{ env.ARCH_TAG }}
+      # The upstream smoke test runs inside the compile RUN, so it can't catch a
+      # RUN that never took effect (the published upstream arm64 image has an
+      # empty compile layer). Check the finished image instead.
+      - name: Smoke test
+        run: |
+          docker run --rm --entrypoint sh "$ARCH_TAG" -c '
+            set -e
+            uname -m
+            qemu-img --version
+            command -v ${{ matrix.qemu_system }}
+            ${{ matrix.qemu_system }} --version
+            test ! -e /qemu-patches'
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        env:
+          TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db,public.ecr.aws/aquasecurity/trivy-db
+        with:
+          scan-type: 'image'
+          image-ref: ${{ env.ARCH_TAG }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          vuln-type: 'os,library'
+          hide-progress: true
+          ignore-unfixed: true
+          exit-code: '0'
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: trivy-native-${{ matrix.arch }}
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: docker push "$ARCH_TAG"
+
+  manifest:
+    needs: [prep, docker]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      IMAGE: ${{ needs.prep.outputs.image }}
+      VERSION: ${{ needs.prep.outputs.version }}
+      DIR: ${{ needs.prep.outputs.dir }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+      - name: Log in to registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create multi-platform manifest
+        run: |
+          docker buildx imagetools create \
+            -t "$IMAGE:native" \
+            -t "$IMAGE:$DIR-native" \
+            -t "$IMAGE:$VERSION-native" \
+            "$IMAGE:$VERSION-native-amd64" \
+            "$IMAGE:$VERSION-native-arm64"
+      - name: Show manifest
+        run: docker buildx imagetools inspect "$IMAGE:native"
