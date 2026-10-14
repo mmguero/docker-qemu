@@ -101,7 +101,8 @@ jobs:
       # timeout (exit 124) means QEMU was still running; an early exit is a failure.
       - name: Boot test
         run: |
-          docker run --rm -e QEMU_NO_VNC=1 --entrypoint bash "$ARCH_TAG" -c '
+          docker run --rm -e QEMU_NO_VNC=1 -e QEMU_CDROM=/tmp/empty.iso --entrypoint bash "$ARCH_TAG" -c '
+            truncate -s 1M /tmp/empty.iso
             timeout 20 start-qemu -display none </dev/null
             rc=$?
             echo "start-qemu exit status: $rc"
