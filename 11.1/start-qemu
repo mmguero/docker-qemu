@@ -41,6 +41,31 @@ fi
 qemuArgs+=( -smp "${QEMU_CPU:-1}" )
 qemuArgs+=( -m "${QEMU_RAM:-512}" )
 
+# architectures without a default machine need one chosen for them, plus
+# firmware, a display, input devices, and a CD-ROM that doesn't rely on IDE
+#   QEMU_MACHINE   (-machine, default "virt,gic-version=max" on aarch64)
+#   QEMU_CPU_MODEL (-cpu, default "max" on aarch64)
+qemuCdromViaScsi=
+case "$qemuArch" in
+	aarch64)
+		qemuArgs+=(
+			-machine "${QEMU_MACHINE:-virt,gic-version=max}"
+			-cpu "${QEMU_CPU_MODEL:-max}"
+		)
+		qemuBios='/usr/share/qemu-efi-aarch64/QEMU_EFI.fd'
+		if [ -s "$qemuBios" ]; then
+			qemuArgs+=( -bios "$qemuBios" )
+		fi
+		qemuArgs+=(
+			-device virtio-gpu-pci
+			-device qemu-xhci
+			-device usb-kbd
+			-device usb-tablet
+		)
+		qemuCdromViaScsi=1
+		;;
+esac
+
 if [ -n "${QEMU_HDA:-}" ]; then
 	if [ ! -f "$QEMU_HDA" -o ! -s "$QEMU_HDA" ]; then
 		(
@@ -65,7 +90,16 @@ if [ -n "${QEMU_HDA:-}" ]; then
 fi
 
 if [ -n "${QEMU_CDROM:-}" ]; then
-	qemuArgs+=( -cdrom "$QEMU_CDROM" )
+	if [ -n "$qemuCdromViaScsi" ]; then
+		# "-cdrom" attaches to IDE, which machines like aarch64 "virt" don't have
+		qemuArgs+=(
+			-drive file="$QEMU_CDROM",media=cdrom,if=none,id=cdrom,readonly=on
+			-device virtio-scsi-pci,id=scsi-cdrom
+			-device scsi-cd,drive=cdrom,bus=scsi-cdrom.0
+		)
+	else
+		qemuArgs+=( -cdrom "$QEMU_CDROM" )
+	fi
 fi
 
 if [ -n "${QEMU_BOOT:-}" ]; then

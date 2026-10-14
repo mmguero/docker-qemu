@@ -27,8 +27,6 @@ By default, this image will use [QEMU's user-mode networking stack](https://wiki
 
 The `native` variants for `amd64` only contain `qemu-system-x86_64` -- the non-`native` variants contain QEMU compiled for a variety of target CPUs.
 
-## About this fork
+## Publish workflow
 
-This fork publishes the `native` variant for both `linux/amd64` and `linux/arm64` to `ghcr.io/<owner>/qemu` (tags `native`, `<major.minor>-native` and `<version>-native`) via [`.github/workflows/publish.yml`](.github/workflows/publish.yml). Each architecture is built on a native GitHub runner and checked for a working `qemu-img` and `qemu-system-*` before it is pushed, because the upstream `arm64` `native` image currently ships with an empty QEMU build layer. The version built is set by `QEMU_DIR` in that workflow.
-
-The GPG key lookup uses `hkps://keyserver.ubuntu.com` (port 443) rather than plain HKP (port 11371), which is often blocked.
+`.github/workflows/publish.yml` publishes the `native` variant for both `linux/amd64` and `linux/arm64` to `ghcr.io/<owner>/qemu` (tags `native`, `<major.minor>-native` and `<version>-native`) via [`.github/workflows/publish.yml`](.github/workflows/publish.yml). Each architecture is built on a native GitHub runner and checked for a working `qemu-img` and `qemu-system-*` before it is pushed. The version built is set by `QEMU_DIR` in that workflow.
